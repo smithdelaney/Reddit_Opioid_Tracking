@@ -9,7 +9,7 @@ from typing import DefaultDict, Set, List
 
 #################################################
 #Title: reddit_process.py
-#Author: Delaney Smith
+#Author: Delaney Smith, Aadesh Salecha
 #Inputs: Raw reddit comment data, extract drug term mentions, lexicon terms file
 #Output: Pickled term (extracted terms mapped to drug and drug category), total comment, and cohort (filtered by user) comment files by year
 #################################################
@@ -22,7 +22,7 @@ def assign_semi(week):
     - week (int): week of the year
  
     Returns:
-    - (int): first or second half year
+    - (int) first or second half year
     """
     if week < 26:
         return 1
@@ -37,7 +37,7 @@ def construct_term_lexicon(opBenzTermListFile: str) -> Set[str]:
     - opBenzTermListFile (str): Path to the term list file.
 
     Returns:
-    - terms [str]: A set of terms.
+    - Set[str]: A set of terms.
     """
     with open(opBenzTermListFile) as inFile:
         terms = {line.strip().lower().replace(" ", "_") for line in inFile}
@@ -53,7 +53,7 @@ def construct_term_to_drug_mapping(termMappingLongFormFile: str, termSet: Set[st
     - termSet (Set[str]): A set of terms.
 
     Returns:
-    - mapping [str, str]: A mapping from term to drug.
+    - DefaultDict[str, str]: A mapping from term to drug.
     """
     mapping = defaultdict(lambda : "Uncategorized")
     df = pd.read_csv(termMappingLongFormFile, delimiter='$', header=0)
@@ -73,7 +73,7 @@ def construct_drug_to_category_mapping(drug_category_file: str) -> DefaultDict[s
     - drug_category_file (str): Path to the drug category file.
 
     Returns:
-    - mapping (DefaultDict[str, str]): A mapping from drug to category.
+    - DefaultDict[str, str]: A mapping from drug to category.
     """
     mapping = defaultdict(lambda : "Uncategorized")
     df = pd.read_csv(drug_category_file)
@@ -87,10 +87,10 @@ def construct_user_to_subreddit_mapping(user_sub_file: str) -> DefaultDict[str, 
     Construct the user to subreddit mapping from the given file.
 
     Args:
-    - user_sub_file (str): Path to the uData assignments file.
+    - user_subreddit_file (str): Path to the uData assignments file.
 
     Returns:
-    - mapping (DefaultDict[str, str]): A mapping from user to subreddit.
+    - DefaultDict[str, str]: A mapping from user to subreddit.
     """
     mapping = defaultdict(lambda : "Uncategorized")
     column_headers = ["user", "subreddit"]
@@ -108,7 +108,7 @@ def construct_sub_to_region_mapping(sub_region_file: str) -> DefaultDict[str, st
     - sub_region_file (str): Path to the subreddit locations file.
 
     Returns:
-    - mapping DefaultDict[str, str]: A mapping from subreddit to region (area).
+    - DefaultDict[str, str]: A mapping from subreddit to region (area).
     """
     mapping = defaultdict(lambda : "Uncategorized")
     df = pd.read_csv(sub_region_file)
@@ -134,7 +134,83 @@ def construct_sub_to_state_mapping(sub_region_file: str) -> DefaultDict[str, str
     
     return mapping
 
-#Removes duplicate comments
+def process_directory_terms(drugCategoryFile: str, opBenzTermListFile: str, directory: str, termMappingLongFormFile: str, userSubFile: str, subRegionFile: str, agg_frequency: str = 'day') -> pd.DataFrame:
+    
+    """
+    Process directory for term specific comments.
+
+    Args:
+    - drugCategoryFile (str): maps drugs to drug categories
+    - opBenzTermListFile (str): path to term set mapping file
+    - directory (str): path to data directory 
+    - termMappingLongFormFile (str): maps terms to drugs
+    - userSubFile (str): adds user's subreddit to file 
+    - subRegionFile (str): converts subreddit to region
+    - agg_frequency (str): Aggregation frequency ('day', 'month', 'year', 'week', 'semi').
+
+    Returns:
+    - pd.DataFrame: final aggregated data.
+
+    """
+    aggregated_data = []
+    files = os.listdir(directory)
+    terms_files = [file for file in files if "_termsTracking" in file]
+    
+    termSet = construct_term_lexicon(opBenzTermListFile)
+    term_to_drug_mapping = construct_term_to_drug_mapping(termMappingLongFormFile, termSet)
+    drug_to_category_mapping = construct_drug_to_category_mapping(drugCategoryFile)
+    user_to_sub_mapping = construct_user_to_subreddit_mapping(userSubFile)
+    sub_to_region = construct_sub_to_region_mapping(subRegionFile)
+    sub_to_state = construct_sub_to_state_mapping(subRegionFile)
+   
+    print("Total term files", len(terms_files))
+    for i, terms_file in enumerate(tqdm(terms_files, desc="Processing files")):
+        with open(os.path.join(directory, terms_file), 'r', encoding='ISO-8859-1') as file:
+            reader = csv.reader(file)
+            columns = next(reader)
+            data = list(reader)
+        terms_df = pd.DataFrame(data, columns=columns)
+        
+        termSet = set(terms_df['term'])
+        if agg_frequency == 'day':
+            terms_df['agg_period'] = terms_df['postTime'].str.split('-').str[:3].str.join('-')
+        elif agg_frequency == 'month':
+            terms_df['agg_period'] = terms_df['postTime'].str.split('-').str[:2].str.join('-')
+        elif agg_frequency == 'year':
+            terms_df['agg_period'] = terms_df['postTime'].str.split('-').str[0]
+        elif agg_frequency == 'semi':
+            terms_df['datetime'] = pd.to_datetime(terms_df['postTime'], format='%y-%m-%d-%H-%M')
+            terms_df['year'], terms_df['week'] = terms_df['datetime'].dt.isocalendar().year, terms_df['datetime'].dt.isocalendar().week
+            terms_df['semi'] = terms_df['week'].apply(assign_semi)
+            terms_df['agg_period'] = terms_df['year'].astype(str) + "_" + terms_df['semi'].astype(str)
+        elif agg_frequency == 'week':
+            # Convert 'postTime' to datetime with a custom format
+            terms_df['datetime'] = pd.to_datetime(terms_df['postTime'], format='%y-%m-%d-%H-%M')
+            terms_df['year'], terms_df['week'] = terms_df['datetime'].dt.isocalendar().year, terms_df['datetime'].dt.isocalendar().week
+            terms_df['agg_period'] = terms_df['year'].astype(str) + "-W" + terms_df['week'].astype(str)
+        else:
+            raise ValueError(f"Unsupported aggregation frequency: {agg_frequency}")
+
+        # Use add the drug, subreddit, state, and area columns to dataframe from existing files
+        terms_df['drug'] = terms_df['term'].map(term_to_drug_mapping)
+        terms_df['category'] = terms_df['drug'].map(drug_to_category_mapping)
+        terms_df['subreddit'] = terms_df['user'].map(user_to_sub_mapping)
+        terms_df['area'] = terms_df['subreddit'].map(sub_to_region)
+        terms_df['state'] = terms_df['subreddit'].map(sub_to_state)
+        
+        #aggregated = terms_df.groupby(['agg_period', 'drug', 'area']).size().reset_index(name='count')
+        aggregated_data.append(terms_df)
+        
+    
+    final_aggregated_data = pd.concat(aggregated_data, axis=0)
+    return final_aggregated_data
+
+
+""" 
+Aadesh added this function
+It builds on the previous function by de-duplicating comments
+This is now useful because with the new data fill files, we sometimes have duplicate comments
+"""
 seen_comments_shards = {}
 def process_directory_terms_v2(drugCategoryFile: str, opBenzTermListFile: str, directory: str, termMappingLongFormFile: str, userSubFile: str, subRegionFile: str, agg_frequency: str = 'day') -> pd.DataFrame:
     
@@ -225,8 +301,48 @@ def process_directory_terms_v2(drugCategoryFile: str, opBenzTermListFile: str, d
         final_aggregated_data = pd.DataFrame()
     return final_aggregated_data
 
-#Global dictionary to track seen comment IDs for each aggregation period
+def process_cohort_comments(directory: str, userSubFile: str, subRegionFile: str) -> pd.DataFrame:
+    """
+    Process directory for cohort total comments.
+
+    Args:
+    - directory (str): path to data directory 
+    - userSubFile (str): adds user's subreddit to file 
+    - subRegionFile (str): converts subreddit to region
+
+    Returns:
+    - pd.DataFrame: final data
+
+    """
+    aggregated_data = []
+    files = os.listdir(directory)
+    comment_files = [file for file in files if "_cohortCommentTracking.txt" in file]
+   
+    print("Total cohort files", len(comment_files))
+    for comment_file in tqdm(comment_files, desc="Processing files"):
+        comment_df = pd.read_csv(os.path.join(directory, comment_file))
+        aggregated_data.append(comment_df)
+    
+    data = pd.concat(aggregated_data, axis=0)
+
+    user_to_sub_mapping = construct_user_to_subreddit_mapping(userSubFile)
+    sub_to_region = construct_sub_to_region_mapping(subRegionFile)
+    sub_to_state = construct_sub_to_state_mapping(subRegionFile)
+
+    data = data.rename(columns={'Author': 'user'})
+    data['subreddit'] = data['user'].map(user_to_sub_mapping)
+    data['area'] = data['subreddit'].map(sub_to_region)
+    data['state'] = data['subreddit'].map(sub_to_state)
+
+    return data
+
+# Global dictionary to track seen comment IDs for each aggregation period
 seen_cohort_comments_shards = defaultdict(set)
+""" 
+Aadesh added this function
+It builds on the previous function by de-duplicating comments
+This is now useful because with the new data fill files, we sometimes have duplicate comments
+"""
 def process_cohort_comments_v2(directory: str, userSubFile: str, subRegionFile: str) -> pd.DataFrame:
     """
     Process directory for cohort total comments. This version of the function includes a de-duplication mechanism
@@ -242,7 +358,7 @@ def process_cohort_comments_v2(directory: str, userSubFile: str, subRegionFile: 
     - subRegionFile (str): converts subreddit to region
 
     Returns:
-    - data (pd.DataFrame): processed cohort comment data
+    - pd.DataFrame: final data
 
     """
     aggregated_data = []
@@ -287,6 +403,7 @@ def process_cohort_comments_v2(directory: str, userSubFile: str, subRegionFile: 
 
     return data
         
+
 def process_total_comments(directory: str) -> pd.DataFrame:
     """
     Read in all total comment files for a given year and combine them into one dataframe
@@ -295,7 +412,7 @@ def process_total_comments(directory: str) -> pd.DataFrame:
     - directory (str): string containing file path to yearly data directory
  
     Returns:
-    - final_aggregated_data (pd.DataFrame): combined total comment data.
+    - pd.DataFrame: Aggregated data.
     """
     aggregated_data = []
     files = os.listdir(directory)
@@ -318,7 +435,7 @@ def aggregate_comments_by_frequency(data: pd.DataFrame, agg_frequency: str) -> p
     - agg_frequency (str): Aggregation frequency ('day', 'month', 'year', 'week', 'semi').
 
     Returns:
-    - data (pd.DataFrame): Agg period labeled data.
+    - pd.DataFrame: Agg period labeled data.
     """
     def safe_convert(date_str):
         try:
@@ -401,12 +518,15 @@ def main(data_dir: str, years: List[str], agg_frequency: str, force_reprocess: b
     userSubFile = "./mappings/uData_assignments_v2.tsv"
     subRegionFile = "./mappings/subreddit_locations_manually_cleaned.csv"
 
+    pickle_dir = "DelaneyPickleFiles"
+    os.makedirs(pickle_dir, exist_ok=True)
+
 # performs total comment aggregation (totalCommentTracking)
     all_aggregated_totals = []
     print("Aggregate total comment data..")
     for year in years:
         directory = f"{data_dir}/{year}/"
-        pickle_file = f"total_comments_data_{year}_pickle.p"
+        pickle_file =  os.path.join(pickle_dir, f"total_comments_data_{year}_pickle.p")
         if not os.path.exists(pickle_file) or force_reprocess:
             total_comments_data = process_total_comments(directory)
             with open(pickle_file, "wb") as f:
@@ -419,17 +539,17 @@ def main(data_dir: str, years: List[str], agg_frequency: str, force_reprocess: b
     final_dataframe = pd.concat(all_aggregated_totals, ignore_index=True)
     aggregated_comments_data = aggregate_comments_by_frequency(final_dataframe, agg_frequency)
     combined_aggregated_comments = pd.concat([aggregated_comments_data], axis=0)
-    agg_pickle_file = f"aggregated_total_comments_data_pickle_{agg_frequency}.p"
+    agg_pickle_file =  os.path.join(pickle_dir, f"aggregated_total_comments_data_pickle_{agg_frequency}.p")
     print(combined_aggregated_comments)
     with open(agg_pickle_file, "wb") as f:
         pickle.dump(combined_aggregated_comments, f)
 
-#performs term-based comment aggregation (termsTracking)
+#  performs term-based comment aggregation (termsTracking)
     term_aggregated_data = []
     print("Aggregate term data..")
     for year in years:
         directory = f"{data_dir}/{year}/"
-        pickle_file = f"term_data_{year}_pickle_{agg_frequency}.p"
+        pickle_file =  os.path.join(pickle_dir, f"term_data_{year}_pickle_{agg_frequency}.p")
         if not os.path.exists(pickle_file) or force_reprocess:
             aggregated_data_csv = process_directory_terms_v2(drug_category_file, opBenzTermListFile, directory, termMappingLongFormFile, userSubFile, subRegionFile, agg_frequency=agg_frequency)
             with open(pickle_file, "wb") as f:
@@ -440,17 +560,17 @@ def main(data_dir: str, years: List[str], agg_frequency: str, force_reprocess: b
 
         term_aggregated_data.append(aggregated_data_csv)
     all_term_data = pd.concat(term_aggregated_data, axis=0)
-    agg_pickle_file = f"aggregated_term_data_pickle_{agg_frequency}.p"
+    agg_pickle_file =  os.path.join(pickle_dir, f"aggregated_term_data_pickle_{agg_frequency}.p")
     print(all_term_data)
     with open(agg_pickle_file, "wb") as f:
         pickle.dump(all_term_data, f)
 
-#performs cohort comment aggregation
+    # performs cohort-specific total comment aggregation (cohortCommentTracking)
     cohort_aggregated_totals = []
-    print("Aggregate cohort comment data..")
+    print("Aggregate cohort total comment data..")
     for year in years:
         directory = f"{data_dir}/{year}/"
-        pickle_file = f"cohort_comments_data_{year}_pickle_{agg_frequency}.p"
+        pickle_file =  os.path.join(pickle_dir, f"cohort_comments_data_{year}_pickle_{agg_frequency}.p")
         if not os.path.exists(pickle_file) or force_reprocess:
             total_comments_data = process_cohort_comments_v2(directory, userSubFile, subRegionFile)
             with open(pickle_file, "wb") as f:
@@ -464,12 +584,13 @@ def main(data_dir: str, years: List[str], agg_frequency: str, force_reprocess: b
 
     all_cohort_data = aggregate_cohort_comments_by_frequency(final_dataframe, agg_frequency)
     combined_cohort_comments = pd.concat([all_cohort_data], axis=0)
-    agg_cohort_file = f"aggregated_cohort_comments_data_pickle_{agg_frequency}.p"
+    agg_cohort_file =  os.path.join(pickle_dir, f"aggregated_cohort_comments_data_pickle_{agg_frequency}.p")
     with open(agg_cohort_file, "wb") as f:
        pickle.dump(combined_cohort_comments, f)
     print(final_dataframe)
     agg_cohort_file = f"aggregated_cohort_comments_data_pickle_{agg_frequency}.csv"
     final_dataframe.to_csv(agg_cohort_file, index=False)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Script to process the redddit data.")
