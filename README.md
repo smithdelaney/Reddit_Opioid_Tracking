@@ -17,3 +17,4 @@ The order of operations for the scripts is as follows. Outputs from script 1 are
 2. cdc_analysis.py
 3. nflis_analysis.py
 4. ARIMA_modeling.py
+5. Visualization code --> folder containing code used for supplemental Table (not needed in remaining pipeline)
